@@ -1,0 +1,6 @@
+- name: openstack destroy
+  hosts: localhost
+  tasks:
+    - openstack.cloud.server:
+        name: jupyter-{{ user.name }}
+        state: absent

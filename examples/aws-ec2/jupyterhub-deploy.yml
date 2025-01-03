@@ -1,0 +1,138 @@
+# Install JupyterHub
+
+- name: Install jupyterhub
+  hosts: jupyterhub
+  become: true
+
+  pre_tasks:
+    - wait_for_connection:
+
+    # https://docs.conda.io/projects/conda/en/latest/user-guide/install/rpm-debian.html
+    - name: Add conda yum repository
+      yum_repository:
+        name: conda
+        description: Anaconda conda
+        baseurl: https://repo.anaconda.com/pkgs/misc/rpmrepo/conda
+        gpgkey: https://repo.anaconda.com/pkgs/misc/gpgkeys/anaconda.asc
+
+    - name: Upgrade packages
+      dnf:
+        name: "*"
+        state: latest
+
+    - name: Install packages
+      package:
+        name:
+          - conda
+          - git
+          - screen
+          # packaging module is needed for the pip module even though
+          # it's in a virtualenv
+          # https://github.com/ansible/ansible/issues/82444
+          - python3-packaging
+        state: present
+
+  roles:
+    - role: evandam.conda
+
+  tasks:
+    # conda runs out of memory on an AWS EC2 t2.micro instance so use mamba
+
+    - name: Install mamba
+      conda:
+        channels:
+          - conda-forge
+        name:
+          - mamba=1.5.6
+        # Specifying an environment makes this non-idempotent 😞
+        # environment: jupyterhub
+        executable: /opt/conda/bin/conda
+        state: present
+      tags:
+        # Skip this task during the idempotence check 😞
+        - molecule-idempotence-notest
+
+    - name: Install Jupyterhub
+      conda:
+        channels:
+          - conda-forge
+        name:
+          - python=3.10
+          - jupyterhub=4
+          - oauthenticator=16
+          - ansible=9.2
+          - ansible-runner=2.3
+          - boto3=1.23 # for Ansible AWS modules
+          - docker-py=7 # for Ansible Docker modules
+          - shade=1.33 # for Ansible Openstack modules
+          - pip
+        # Specifying an environment makes this non-idempotent 😞
+        # environment: jupyterhub
+        # executable: /opt/conda/envs/jupyterhub/bin/mamba
+        executable: /opt/conda/bin/mamba
+        state: present
+      tags:
+        # Skip this task during the idempotence check 😞
+        - molecule-idempotence-notest
+
+    - name: Install jupyterhub-ansiblespawner
+      pip:
+        name:
+          - git+https://github.com/manics/jupyterhub-ansiblespawner.git@main
+        executable: /opt/conda/bin/pip
+        state: present
+
+    - name: Create jupyterhub system user
+      user:
+        name: jupyterhub
+        home: /opt/jupyterhub
+        system: true
+        state: present
+
+    - name: Create jupyterhub directory
+      file:
+        path: /opt/jupyterhub
+        owner: jupyterhub
+        state: directory
+
+    - name: Copy across playbooks
+      copy:
+        src: "{{ item }}"
+        dest: /opt/jupyterhub/{{ item }}
+      with_items:
+        - create.yml
+        - destroy.yml
+        - poll.yml
+        - update.yml
+        - inventory.yml.j2
+        - jupyterhub-singleuser.service.j2
+
+    - name: Copy across private SSH key
+      copy:
+        src: "{{ ssh_private_key | default(ansible_srcdir | default('') + 'jupyter-id_rsa.pem') }}"
+        dest: /opt/jupyterhub/jupyter-id_rsa.pem
+
+    - name: Create JupyterHub configuration
+      template:
+        src: jupyterhub_config.py
+        dest: /opt/jupyterhub/jupyterhub_config.py
+      vars:
+        _jupyter_ec2_key_name: "{{ jupyter_ec2_key_name | default(hostvars['localhost'].jupyter_ec2_key_name) }}"
+        _jupyter_ec2_subnet: "{{ jupyter_ec2_subnet | default(hostvars['localhost']._subnet.subnet.id) }}"
+
+    - name: Copy systemd service
+      copy:
+        src: jupyterhub.service
+        dest: /etc/systemd/system/jupyterhub.service
+
+    - name: Start JupyterHub
+      systemd:
+        name: jupyterhub
+        state: started
+        enabled: true
+        daemon_reload: true
+
+  vars:
+    # Defined in jupyterhub-provision.yml but can be overridden
+    # jupyter_ec2_key_name:
+    # jupyter_ec2_subnet:
